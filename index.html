@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Event Check-In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <!-- QR decoding engines: ZXing-C++ (WebAssembly) first, jsQR fallback -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/iife/reader/index.js"></script>
+  <!--
+    Phone front-end for the Event QR system. It is hosted outside script.google.com on purpose:
+    Google rewrites script.google.com links to /macros/u/0/... for phones signed into a Google
+    account, and that address fails for everyone except the script's editors. This page talks to
+    the Apps Script backend with cookie-free requests, so the phone's Google sign-in never matters.
+  -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      min-height: 100dvh;
+      background: #090e1a;
+      color: #f8fafc;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      -webkit-font-smoothing: antialiased;
+    }
+    [hidden] { display: none !important; }
+    .wrapper { width: 100%; max-width: 440px; }
+    .header { text-align: center; margin-bottom: 16px; }
+    .header h1 { font-size: 21px; font-weight: 800; letter-spacing: -0.02em; }
+    .header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+
+    .nav-tabs {
+      display: flex; gap: 4px; padding: 4px; margin-bottom: 18px;
+      background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 14px;
+    }
+    .nav-tab-btn {
+      flex: 1; padding: 10px 4px; border: none; border-radius: 10px; cursor: pointer;
+      background: transparent; color: #94a3b8; font: inherit; font-size: 13px; font-weight: 700;
+    }
+    .nav-tab-btn.active { background: #38bdf8; color: #0f172a; box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3); }
+
+    .card {
+      background: rgba(30, 41, 59, 0.95); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 20px;
+      padding: 22px 18px; box-shadow: 0 15px 30px rgba(0, 0, 0, 0.5); margin-bottom: 20px;
+    }
+    .card h3 { font-size: 17px; text-align: center; margin-bottom: 6px; }
+    .hint { font-size: 12px; color: #94a3b8; text-align: center; margin-bottom: 16px; }
+
+    .form-group { margin-bottom: 14px; }
+    .field-label {
+      display: block; font-size: 12px; font-weight: 700; color: #cbd5e1; margin-bottom: 6px;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    input[type="text"], input[type="tel"], input[type="search"] {
+      width: 100%; padding: 12px 14px; border-radius: 10px; outline: none;
+      background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.12);
+      font: inherit; font-size: 16px; color: #ffffff;
+    }
+    input:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2); }
+
+    .btn {
+      width: 100%; min-height: 48px; padding: 13px; margin-top: 8px; border: none; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+      font: inherit; font-size: 15px; font-weight: 700; color: #ffffff; text-decoration: none;
+    }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+    .btn-primary { background: linear-gradient(135deg, #0284c7, #38bdf8); box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35); }
+    .btn-accent { background: linear-gradient(135deg, #7c3aed, #a855f7); box-shadow: 0 4px 14px rgba(168, 85, 247, 0.35); }
+    .btn-secondary { background: rgba(255, 255, 255, 0.08); color: #e2e8f0; border: 1px solid rgba(255, 255, 255, 0.12); }
+    .btn-small { width: auto; min-height: 36px; margin-top: 0; padding: 0 14px; font-size: 13px; }
+
+    /* The real file input covers the button, so the tap lands on the input itself (reliable on iOS) */
+    .file-btn { position: relative; overflow: hidden; }
+    .file-btn input[type="file"] {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
+    }
+
+    .record-toggle {
+      display: flex; align-items: center; gap: 10px; margin-top: 14px; cursor: pointer;
+      font-size: 13px; font-weight: 600; color: #cbd5e1;
+    }
+    .record-toggle input { width: 20px; height: 20px; flex-shrink: 0; accent-color: #38bdf8; }
+    .scan-status { text-align: center; min-height: 20px; margin-top: 8px; font-size: 12px; font-weight: 700; color: #38bdf8; }
+    .manual-entry { margin-top: 18px; padding-top: 14px; border-top: 1px dashed rgba(255, 255, 255, 0.1); }
+    .manual-row { display: flex; gap: 8px; }
+
+    /* Verification result (scan tab and ?id= check-in page) */
+    .result {
+      margin-top: 14px; padding: 18px 16px; border-radius: 14px; text-align: center;
+      background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .result.success { border-color: rgba(16, 185, 129, 0.5); }
+    .result.duplicate { border-color: rgba(245, 158, 11, 0.5); }
+    .result.error { border-color: rgba(239, 68, 68, 0.5); }
+    .result.loading { border-color: rgba(56, 189, 248, 0.4); }
+    .result-icon {
+      width: 56px; height: 56px; margin: 0 auto 10px; border-radius: 50%; font-size: 28px; color: #ffffff;
+      display: flex; align-items: center; justify-content: center; background: #334155;
+    }
+    .result.success .result-icon { background: #10b981; }
+    .result.duplicate .result-icon { background: #f59e0b; }
+    .result.error .result-icon { background: #ef4444; }
+    .result-title { font-size: 18px; font-weight: 800; margin-bottom: 4px; }
+    .result-message { font-size: 13px; color: #94a3b8; line-height: 1.45; overflow-wrap: anywhere; }
+    .result-guest { margin-top: 12px; padding-top: 10px; text-align: left; border-top: 1px dashed rgba(255, 255, 255, 0.1); }
+    .result-guest div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+    .result-guest span { color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 11px; }
+    .result-guest strong { color: #f1f5f9; text-align: right; overflow-wrap: anywhere; }
+    .result-big { padding: 28px 20px; }
+    .result-big .result-icon { width: 80px; height: 80px; font-size: 38px; }
+    .result-big .result-title { font-size: 24px; }
+    .result-big .result-message { font-size: 15px; }
+
+    /* Guest list */
+    .list-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+    .list-header h3 { margin: 0; }
+    .guest-summary { font-size: 12px; color: #94a3b8; margin-bottom: 14px; }
+    .guest-item {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      padding: 10px 12px; margin-bottom: 8px; border-radius: 10px; font-size: 13px;
+      background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .guest-item-name { font-weight: 700; overflow-wrap: anywhere; }
+    .guest-item-sub { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+    .guest-item-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .status-pill { font-size: 10px; padding: 4px 8px; border-radius: 999px; font-weight: 700; text-transform: uppercase; }
+    .status-active { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .status-checked { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+    .link-btn { border: none; background: none; color: #38bdf8; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .empty-note { font-size: 13px; color: #94a3b8; text-align: center; padding: 12px 0; }
+
+    /* New guest pass */
+    .pass {
+      text-align: center; background: #ffffff; color: #0f172a; border-radius: 16px;
+      padding: 22px 16px 16px; margin-bottom: 8px;
+    }
+    .pass-badge {
+      display: inline-block; margin-bottom: 12px; padding: 4px 10px; border-radius: 999px;
+      background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0;
+      font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .pass img { width: 200px; height: 200px; display: block; margin: 0 auto 12px; border: 3px solid #0f172a; border-radius: 8px; }
+    .pass-name { font-size: 20px; font-weight: 800; }
+    .pass-table { font-size: 15px; font-weight: 700; color: #d97706; margin: 2px 0 6px; }
+    .pass-id { font-size: 24px; font-weight: 800; letter-spacing: 0.05em; color: #1e293b; }
+    .footer-note { text-align: center; font-size: 11px; color: #64748b; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <h1>🎟️ Event Guest Check-In</h1>
+      <p id="header-sub">Scan passes, check the guest list, add guests</p>
+    </div>
+
+    <!-- Shown when a guest's QR pass link (?id=...) is opened by a phone camera -->
+    <div id="checkin-view" hidden>
+      <div id="checkin-result" class="result result-big"></div>
+      <button type="button" class="btn btn-secondary" onclick="openApp('test')">🔍 Open Scanner</button>
+    </div>
+
+    <div id="app-view">
+      <div class="nav-tabs">
+        <button type="button" class="nav-tab-btn" id="tab-btn-test" onclick="switchTab('test')">🔍 Scan</button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-guests" onclick="switchTab('guests')">📋 Guests</button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-add" onclick="switchTab('add')">➕ Add</button>
+      </div>
+
+      <!-- Scan & Verify -->
+      <div class="card" id="test-section" hidden>
+        <h3>Scan &amp; Verify</h3>
+        <p class="hint">Snap the guest's QR pass, upload a saved photo, or type the code.</p>
+
+        <label class="btn btn-primary file-btn">
+          <span>📷 Scan with Camera</span>
+          <input type="file" id="camera-input" accept="image/*" capture="environment">
+        </label>
+        <label class="btn btn-accent file-btn" style="margin-top: 10px;">
+          <span>📁 Upload QR Image</span>
+          <input type="file" id="gallery-input" accept="image/*">
+        </label>
+
+        <label class="record-toggle">
+          <input type="checkbox" id="record-checkin" checked>
+          <span>Record as a real check-in (untick to verify only)</span>
+        </label>
+
+        <div id="scan-status" class="scan-status"></div>
+        <div id="scan-result" class="result" hidden></div>
+
+        <div class="manual-entry">
+          <label class="field-label" for="manual-id">Or enter Guest ID / token</label>
+          <div class="manual-row">
+            <input type="text" id="manual-id" placeholder="e.g. 8244001 or token" autocapitalize="characters" autocomplete="off">
+            <button type="button" class="btn btn-secondary btn-small" id="manual-verify">Verify</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Guest list -->
+      <div class="card" id="guests-section" hidden>
+        <div class="list-header">
+          <h3>Guest List</h3>
+          <button type="button" class="btn btn-secondary btn-small" id="btn-refresh">↻ Refresh</button>
+        </div>
+        <p class="guest-summary" id="guest-summary">Loading…</p>
+        <input type="search" id="guest-search" placeholder="Search name, ID or table" autocomplete="off" style="margin-bottom: 12px;">
+        <div id="guest-list"></div>
+        <p class="empty-note" id="guest-empty" hidden></p>
+      </div>
+
+      <!-- Add guest -->
+      <div id="add-section" hidden>
+        <div id="pass-view" hidden>
+          <div class="pass">
+            <div class="pass-badge">✓ Guest pass saved to Google Sheets</div>
+            <img id="pass-qr" alt="Guest QR pass">
+            <div class="pass-name" id="pass-name"></div>
+            <div class="pass-table" id="pass-table"></div>
+            <div class="pass-id" id="pass-id"></div>
+          </div>
+          <p class="footer-note">Screenshot or share this QR code with the guest.</p>
+          <button type="button" class="btn btn-secondary" id="btn-add-another">+ Add Another Guest</button>
+        </div>
+
+        <form class="card" id="add-form">
+          <h3>Add New Guest</h3>
+          <p class="hint">The guest is saved to the Google Sheet and gets a QR pass.</p>
+          <div class="form-group">
+            <label class="field-label" for="add-name">Full guest name</label>
+            <input type="text" id="add-name" placeholder="e.g. Sarah Connor" required>
+          </div>
+          <div class="form-group">
+            <label class="field-label" for="add-table">Assigned table</label>
+            <input type="text" id="add-table" value="Table 1" required>
+          </div>
+          <div class="form-group">
+            <label class="field-label" for="add-phone">Phone (optional)</label>
+            <input type="tel" id="add-phone" placeholder="e.g. 555-222-2222">
+          </div>
+          <div class="form-group">
+            <label class="field-label" for="add-id">Invitation / Guest ID</label>
+            <input type="text" id="add-id">
+          </div>
+          <button type="submit" class="btn btn-primary" id="btn-add">✨ Save Guest &amp; Create QR</button>
+        </form>
+      </div>
+    </div>
+
+    <p class="footer-note">Event Access Management &bull; Live Google Sheets</p>
+  </div>
+
+  <script>
+    // Apps Script backend (Code.gs). Only its public JSON routes are used.
+    var API_URL = 'https://script.google.com/macros/s/AKfycbzfbzYWp_lFXIqQzRWwSLMK4MM7xZlirvSXXWUXFld5OgIr6mxkMvLFRb7Y9PARFu6m/exec';
+    var GUEST_POLL_MS = 30000;
+
+    var state = { guests: [], lastRefresh: null, refreshing: false, pollTimer: null, verifying: false };
+
+    function $(id) { return document.getElementById(id); }
+
+    function escHtml(value) {
+      return String(value === null || value === undefined ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Cookie-free GET to the backend: never depends on the phone's Google account(s)
+    function api(query) {
+      return fetch(API_URL + '?' + query + '&t=' + Date.now(), { credentials: 'omit', cache: 'no-store' })
+        .then(function(response) {
+          if (!response.ok) throw new Error('server returned ' + response.status);
+          return response.text();
+        })
+        .then(function(text) {
+          try { return JSON.parse(text); } catch (e) { throw new Error('unexpected response from the server'); }
+        });
+    }
+
+    // Pulls the id/token out of a scanned pass URL (old script.google.com or new links), or returns the raw text
+    function extractGuestId(text) {
+      var id = String(text || '').trim();
+      if (/^https?:/i.test(id)) {
+        try {
+          var url = new URL(id);
+          id = url.searchParams.get('id') || url.searchParams.get('token') || url.searchParams.get('guestId') || id;
+        } catch (e) {}
+      }
+      return String(id).trim();
+    }
+
+    /* ---------------- Result rendering ---------------- */
+
+    function renderResult(box, result) {
+      result = result || {};
+      var type = ['success', 'duplicate', 'loading'].indexOf(result.statusType) >= 0 ? result.statusType : 'error';
+      var icon = { success: '✓', duplicate: '⚠', loading: '…', error: '✕' }[type];
+      var html = '<div class="result-icon">' + icon + '</div>' +
+        '<div class="result-title">' + escHtml(result.title || 'Result') + '</div>' +
+        '<div class="result-message">' + escHtml(result.message || '') + '</div>';
+      if (result.guest) {
+        html += '<div class="result-guest">' +
+          '<div><span>Guest</span><strong>' + escHtml(result.guest.name) + '</strong></div>' +
+          '<div><span>Invitation #</span><strong>' + escHtml(result.guest.id) + '</strong></div>' +
+          '<div><span>Table</span><strong>' + escHtml(result.guest.table) + '</strong></div>' +
+          '</div>';
+      }
+      box.className = box.className.replace(/ ?(success|duplicate|error|loading)/g, '') + ' ' + type;
+      box.innerHTML = html;
+      box.hidden = false;
+    }
+
+    function connectionError(err, recorded) {
+      return {
+        statusType: 'error',
+        title: 'Connection Error',
+        message: 'Could not reach the guest list' + (recorded ? ', so nothing was recorded' : '') +
+          '. Check the internet connection and try again. (' + ((err && err.message) || err) + ')'
+      };
+    }
+
+    /* ---------------- ?id= pass link: check the guest in ---------------- */
+
+    function runPassCheckIn(id) {
+      $('app-view').hidden = true;
+      $('checkin-view').hidden = false;
+      $('header-sub').textContent = 'Guest pass check-in';
+      var box = $('checkin-result');
+      renderResult(box, { statusType: 'loading', title: 'Checking pass…', message: 'Invitation ' + id });
+      api('format=json&id=' + encodeURIComponent(id))
+        .then(function(result) { renderResult(box, result); })
+        .catch(function(err) { renderResult(box, connectionError(err, true)); });
+    }
+
+    function openApp(tab) {
+      history.replaceState(null, '', location.pathname + '?tab=' + tab);
+      $('checkin-view').hidden = true;
+      $('app-view').hidden = false;
+      $('header-sub').textContent = 'Scan passes, check the guest list, add guests';
+      switchTab(tab);
+      if (!state.lastRefresh) refreshGuests();
+    }
+
+    /* ---------------- Tabs ---------------- */
+
+    var SECTIONS = { test: 'test-section', guests: 'guests-section', add: 'add-section' };
+
+    function switchTab(tab) {
+      if (!SECTIONS[tab]) tab = 'test';
+      Object.keys(SECTIONS).forEach(function(name) {
+        $(SECTIONS[name]).hidden = name !== tab;
+        $('tab-btn-' + name).classList.toggle('active', name === tab);
+      });
+      if (tab === 'test') prepareZxing();
+
+      // While the guest list is open, keep it in sync with other phones
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+      if (tab === 'guests') {
+        if (!state.lastRefresh || Date.now() - state.lastRefresh.getTime() > 10000) refreshGuests();
+        state.pollTimer = setInterval(refreshGuests, GUEST_POLL_MS);
+      }
+    }
+
+    /* ---------------- Scan & Verify ---------------- */
+
+    function setStatus(text) { $('scan-status').textContent = text || ''; }
+
+    function verifyCode(rawText) {
+      var id = extractGuestId(rawText);
+      var box = $('scan-result');
+      if (!id) { renderResult(box, { statusType: 'error', title: 'No Code', message: 'The QR code was empty.' }); return; }
+      if (state.verifying) return;
+      state.verifying = true;
+
+      var record = $('record-checkin').checked;
+      setStatus('Verifying ' + id + '…');
+      api('format=json&record=' + (record ? '1' : '0') + '&id=' + encodeURIComponent(id))
+        .then(function(result) {
+          renderResult(box, result);
+          // A recorded check-in changes the guest's status, so pull the updated list
+          if (record && result && result.statusType === 'success') refreshGuests();
+        })
+        .catch(function(err) { renderResult(box, connectionError(err, record)); })
+        .then(function() {
+          state.verifying = false;
+          setStatus('');
+          try { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+        });
+    }
+
+    function handleFileInput(event) {
+      var input = event.target;
+      var file = input.files && input.files[0];
+      if (!file) return;
+      // Reset (so the same photo can be picked again) only after decoding: on iOS, clearing the
+      // input deletes the temporary camera file and the photo can no longer be read.
+      processQrFile(file, function() { input.value = ''; });
+    }
+
+    // Decode engines, strongest first:
+    //  1. ZXing-C++ (WebAssembly) - reliable on real phone photos: blur, tilt, screen moire, small codes
+    //  2. BarcodeDetector (native, Android Chrome)
+    //  3. jsQR - pure JS fallback (e.g. iOS Lockdown Mode disables WebAssembly)
+    var ZXING_OPTS = { formats: ['QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 1 };
+    var zxingPrepared = false;
+    var decodeNotes = [];
+
+    function prepareZxing() {
+      if (zxingPrepared || typeof ZXingWASM === 'undefined') return;
+      zxingPrepared = true;
+      try { if (ZXingWASM.prepareZXingModule) ZXingWASM.prepareZXingModule({ fireImmediately: true }); } catch (e) {}
+    }
+
+    function processQrFile(file, done) {
+      setStatus('Reading photo…');
+      decodeNotes = [];
+      prepareZxing();
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function() {
+        decodeImagePipeline(img).then(function(text) {
+          URL.revokeObjectURL(url);
+          done();
+          if (text) {
+            setStatus('✓ QR found');
+            verifyCode(text);
+          } else {
+            decodeFailed(file, img);
+          }
+        });
+      };
+      img.onerror = function() {
+        URL.revokeObjectURL(url);
+        done();
+        decodeNotes.push('image could not be opened (' + (file.type || 'unknown type') + ')');
+        decodeFailed(file, null);
+      };
+      img.src = url;
+    }
+
+    // Draws the photo onto a canvas no larger than maxDim (keeps iOS under its canvas memory limit).
+    // pad > 0 adds a white border: tightly cropped screenshots have no quiet zone around the code.
+    function drawScaled(img, maxDim, pad, upscale) {
+      var w = img.naturalWidth || img.width;
+      var h = img.naturalHeight || img.height;
+      var scale = maxDim / Math.max(w, h);
+      if (!upscale) scale = Math.min(1, scale);
+      w = Math.max(1, Math.round(w * scale));
+      h = Math.max(1, Math.round(h * scale));
+      var p = Math.round(Math.max(w, h) * (pad || 0));
+      var canvas = document.createElement('canvas');
+      canvas.width = w + 2 * p;
+      canvas.height = h + 2 * p;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, p, p, w, h);
+      return { canvas: canvas, ctx: ctx, w: canvas.width, h: canvas.height };
+    }
+
+    function zxingDecode(frame) {
+      return ZXingWASM.readBarcodes(frame.ctx.getImageData(0, 0, frame.w, frame.h), ZXING_OPTS)
+        .then(function(results) { return (results && results.length && results[0].isValid) ? results[0].text : null; })
+        .catch(function(err) { decodeNotes.push('zxing: ' + ((err && err.message) || err)); return null; });
+    }
+
+    function nativeDecode(frame) {
+      try {
+        return new BarcodeDetector({ formats: ['qr_code'] }).detect(frame.canvas)
+          .then(function(codes) { return (codes && codes.length) ? codes[0].rawValue : null; })
+          .catch(function() { return null; });
+      } catch (e) {
+        return Promise.resolve(null);
+      }
+    }
+
+    function jsQrDecode(frame) {
+      try {
+        var full = frame.ctx.getImageData(0, 0, frame.w, frame.h);
+        var code = jsQR(full.data, frame.w, frame.h, { inversionAttempts: 'attemptBoth' });
+        if (code && code.data) return code.data;
+        var cw = Math.round(frame.w * 0.6);
+        var ch = Math.round(frame.h * 0.6);
+        var crop = frame.ctx.getImageData(Math.round((frame.w - cw) / 2), Math.round((frame.h - ch) / 2), cw, ch);
+        var cropCode = jsQR(crop.data, cw, ch, { inversionAttempts: 'attemptBoth' });
+        return (cropCode && cropCode.data) ? cropCode.data : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function decodeImagePipeline(img) {
+      var srcMax = Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height);
+      var cache = {};
+      function frame(key, maxDim, pad, upscale) {
+        if (!cache[key]) cache[key] = drawScaled(img, maxDim, pad, upscale);
+        return cache[key];
+      }
+
+      var attempts = [];
+      if (typeof ZXingWASM !== 'undefined') {
+        [2000, 1200, 800].forEach(function(size) {
+          if (size < srcMax || size === 800) attempts.push(function() { return zxingDecode(frame('z' + size, size)); });
+        });
+        if (srcMax < 900) attempts.push(function() { return zxingDecode(frame('pad', 900, 0.1, true)); });
+      } else {
+        decodeNotes.push('zxing not loaded');
+      }
+      if ('BarcodeDetector' in window) attempts.push(function() { return nativeDecode(frame('n', 1200)); });
+      if (typeof jsQR !== 'undefined') {
+        attempts.push(function() { return Promise.resolve(jsQrDecode(frame('j', 1000))); });
+        if (srcMax < 900) attempts.push(function() { return Promise.resolve(jsQrDecode(frame('jpad', 900, 0.1, true))); });
+      } else {
+        decodeNotes.push('jsQR not loaded');
+      }
+
+      setStatus('Scanning for QR code…');
+      var i = 0;
+      function next() {
+        if (i >= attempts.length) return Promise.resolve(null);
+        var attempt = attempts[i++];
+        var result;
+        try { result = attempt(); } catch (e) { result = Promise.resolve(null); }
+        return result.then(function(text) { return text ? text : next(); });
+      }
+      // Free the canvases right away: iOS caps total canvas memory, and once it is exceeded
+      // every later scan fails with "no QR found" until the page is reloaded.
+      return next().then(function(text) {
+        Object.keys(cache).forEach(function(k) { cache[k].canvas.width = 0; cache[k].canvas.height = 0; });
+        return text;
+      });
+    }
+
+    function decodeFailed(file, img) {
+      setStatus('');
+      var size = img ? (img.naturalWidth + 'x' + img.naturalHeight) : 'unreadable';
+      var engines = [typeof ZXingWASM !== 'undefined' ? 'zxing' : '', 'BarcodeDetector' in window ? 'native' : '', typeof jsQR !== 'undefined' ? 'jsQR' : '']
+        .filter(Boolean).join('+') || 'none';
+      renderResult($('scan-result'), {
+        statusType: 'error',
+        title: 'No QR Code Found',
+        message: 'Hold the phone 15-25 cm away so the whole QR is sharp, avoid glare, or type the Guest ID below. ' +
+          '(Details: photo ' + size + ', ' + (file.type || 'unknown type') + ', engines ' + engines +
+          (decodeNotes.length ? ', ' + decodeNotes.join('; ') : '') + ')'
+      });
+    }
+
+    /* ---------------- Guest list ---------------- */
+
+    function renderGuests() {
+      var guests = state.guests;
+      var checkedIn = guests.filter(function(g) { return g.status === 'Checked In'; }).length;
+      var summary = guests.length + ' guests • ' + checkedIn + ' checked in';
+      if (state.lastRefresh) summary += ' • updated ' + state.lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      $('guest-summary').textContent = summary;
+
+      var q = $('guest-search').value.trim().toLowerCase();
+      var shown = guests.filter(function(g) {
+        return !q || (g.name + ' ' + g.id + ' ' + g.table).toLowerCase().indexOf(q) >= 0;
+      });
+      $('guest-list').innerHTML = shown.map(function(g) {
+        var checked = g.status === 'Checked In';
+        return '<div class="guest-item">' +
+          '<div><div class="guest-item-name">' + escHtml(g.name) + '</div>' +
+          '<div class="guest-item-sub">ID: ' + escHtml(g.id) + ' &bull; ' + escHtml(g.table) + '</div></div>' +
+          '<div class="guest-item-actions"><span class="status-pill ' + (checked ? 'status-checked' : 'status-active') + '">' + escHtml(g.status || 'Active') + '</span>' +
+          '<button type="button" class="link-btn" data-code="' + escHtml(g.token || g.id) + '">Verify &rarr;</button></div>' +
+          '</div>';
+      }).join('');
+
+      var empty = $('guest-empty');
+      empty.textContent = guests.length ? 'No guests match your search.' : 'No guests in the sheet yet.';
+      empty.hidden = shown.length > 0;
+    }
+
+    function refreshGuests() {
+      // A refresh asked for mid-flight (e.g. right after adding a guest) runs once the current one ends,
+      // so the new data is never missed
+      if (state.refreshing) { state.refreshQueued = true; return; }
+      state.refreshing = true;
+      state.refreshQueued = false;
+      var btn = $('btn-refresh');
+      btn.disabled = true;
+      btn.textContent = 'Refreshing…';
+      api('action=listGuests')
+        .then(function(data) {
+          if (!data || !data.success || !Array.isArray(data.guests)) throw new Error('unexpected response');
+          state.guests = data.guests.filter(function(g) { return g && String(g.id || '').trim(); });
+          state.lastRefresh = new Date();
+          renderGuests();
+          suggestNextId();
+        })
+        .catch(function(err) {
+          $('guest-summary').textContent = 'Could not refresh the list (' + ((err && err.message) || err) + '). Tap Refresh to try again.';
+        })
+        .then(function() {
+          state.refreshing = false;
+          btn.disabled = false;
+          btn.textContent = '↻ Refresh';
+          if (state.refreshQueued) refreshGuests();
+        });
+    }
+
+    /* ---------------- Add guest ---------------- */
+
+    function suggestNextId() {
+      var input = $('add-id');
+      if (input.dataset.touched) return;
+      var max = 8244000;
+      state.guests.forEach(function(g) {
+        var n = parseInt(g.id, 10);
+        if (String(n) === String(g.id).trim() && n > max) max = n;
+      });
+      input.value = String(max + 1);
+    }
+
+    function addGuest(event) {
+      event.preventDefault();
+      var btn = $('btn-add');
+      var query = 'action=addGuest&format=json' +
+        '&name=' + encodeURIComponent($('add-name').value.trim()) +
+        '&table=' + encodeURIComponent($('add-table').value.trim()) +
+        '&phone=' + encodeURIComponent($('add-phone').value.trim()) +
+        '&guestId=' + encodeURIComponent($('add-id').value.trim());
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      api(query)
+        .then(function(data) {
+          if (!data || !data.success || !data.guest) throw new Error('the server did not confirm the new guest');
+          var g = data.guest;
+          $('pass-qr').src = g.qrImageUrl;
+          $('pass-name').textContent = g.name;
+          $('pass-table').textContent = 'Assigned seating: ' + g.table;
+          $('pass-id').textContent = g.id;
+          $('pass-view').hidden = false;
+          $('add-form').hidden = true;
+          $('add-form').reset();
+          delete $('add-id').dataset.touched;
+          refreshGuests();
+        })
+        .catch(function(err) {
+          alert('Could not save the guest to Google Sheets (' + ((err && err.message) || err) + '). Nothing was added.');
+        })
+        .then(function() {
+          btn.disabled = false;
+          btn.textContent = '✨ Save Guest & Create QR';
+        });
+    }
+
+    /* ---------------- Wiring ---------------- */
+
+    $('camera-input').addEventListener('change', handleFileInput);
+    $('gallery-input').addEventListener('change', handleFileInput);
+    $('manual-verify').addEventListener('click', function() {
+      var val = $('manual-id').value.trim();
+      if (val) verifyCode(val);
+    });
+    $('manual-id').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); $('manual-verify').click(); }
+    });
+    $('btn-refresh').addEventListener('click', refreshGuests);
+    $('guest-search').addEventListener('input', renderGuests);
+    $('guest-list').addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-code]');
+      if (!btn) return;
+      switchTab('test');
+      verifyCode(btn.getAttribute('data-code'));
+    });
+    $('add-id').addEventListener('input', function() { this.dataset.touched = '1'; });
+    $('add-form').addEventListener('submit', addGuest);
+    $('btn-add-another').addEventListener('click', function() {
+      $('pass-view').hidden = true;
+      $('add-form').hidden = false;
+      $('add-name').focus();
+    });
+
+    (function start() {
+      var params = new URLSearchParams(location.search);
+      var passId = params.get('id') || params.get('token') || params.get('guestId');
+      if (passId) {
+        runPassCheckIn(passId.trim());
+        return;
+      }
+      switchTab(params.get('tab') || 'test');
+      if (!state.lastRefresh) refreshGuests();
+    })();
+  </script>
+</body>
+</html>
