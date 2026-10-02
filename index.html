@@ -134,6 +134,35 @@
     .status-pill { font-size: 10px; padding: 4px 8px; border-radius: 999px; font-weight: 700; text-transform: uppercase; }
     .status-active { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
     .status-checked { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+    .guest-item-meta { font-size: 11px; color: #64748b; margin-top: 3px; }
+    .guest-item-meta .warn { color: #f59e0b; font-weight: 700; }
+
+    /* Audit log */
+    select {
+      width: 100%; padding: 11px 12px; margin-bottom: 12px; border-radius: 10px;
+      background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.12);
+      font: inherit; font-size: 15px; color: #ffffff;
+    }
+    .log-item {
+      padding: 10px 12px; margin-bottom: 8px; border-radius: 10px; font-size: 13px;
+      background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); border-left: 4px solid #475569;
+    }
+    .log-item.success { border-left-color: #10b981; }
+    .log-item.duplicate { border-left-color: #f59e0b; }
+    .log-item.error { border-left-color: #ef4444; }
+    .log-item.verify { border-left-color: #38bdf8; }
+    .log-item.created { border-left-color: #a855f7; }
+    .log-top { display: flex; justify-content: space-between; gap: 8px; }
+    .log-result { font-weight: 800; font-size: 12px; letter-spacing: 0.03em; }
+    .log-item.success .log-result { color: #10b981; }
+    .log-item.duplicate .log-result { color: #f59e0b; }
+    .log-item.error .log-result { color: #ef4444; }
+    .log-item.verify .log-result { color: #38bdf8; }
+    .log-item.created .log-result { color: #c084fc; }
+    .log-time { font-size: 11px; color: #94a3b8; white-space: nowrap; }
+    .log-guest { margin-top: 3px; font-weight: 700; overflow-wrap: anywhere; }
+    .log-meta { margin-top: 2px; font-size: 11px; color: #94a3b8; overflow-wrap: anywhere; }
+
     .link-btn { border: none; background: none; color: #38bdf8; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
     .empty-note { font-size: 13px; color: #94a3b8; text-align: center; padding: 12px 0; }
 
@@ -171,6 +200,7 @@
       <div class="nav-tabs">
         <button type="button" class="nav-tab-btn" id="tab-btn-test" onclick="switchTab('test')">🔍 Scan</button>
         <button type="button" class="nav-tab-btn" id="tab-btn-guests" onclick="switchTab('guests')">📋 Guests</button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-log" onclick="switchTab('log')">📜 Log</button>
         <button type="button" class="nav-tab-btn" id="tab-btn-add" onclick="switchTab('add')">➕ Add</button>
       </div>
 
@@ -215,6 +245,25 @@
         <input type="search" id="guest-search" placeholder="Search name, ID or table" autocomplete="off" style="margin-bottom: 12px;">
         <div id="guest-list"></div>
         <p class="empty-note" id="guest-empty" hidden></p>
+      </div>
+
+      <!-- Audit log: every check-in, duplicate scan, verify, invalid code and guest creation -->
+      <div class="card" id="log-section" hidden>
+        <div class="list-header">
+          <h3>Audit Log</h3>
+          <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-log">↻ Refresh</button>
+        </div>
+        <p class="guest-summary" id="log-summary">Loading…</p>
+        <select id="log-filter" aria-label="Filter the audit log">
+          <option value="all">All activity</option>
+          <option value="checkin">Check-ins</option>
+          <option value="duplicate">Duplicate scans</option>
+          <option value="verify">Verify only</option>
+          <option value="invalid">Invalid codes</option>
+          <option value="created">Guests created</option>
+        </select>
+        <div id="log-list"></div>
+        <p class="empty-note" id="log-empty" hidden></p>
       </div>
 
       <!-- Add guest -->
@@ -271,6 +320,21 @@
       return String(value === null || value === undefined ? '' : value)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Short "OS · browser" label recorded in the audit log's Device column
+    function deviceLabel() {
+      var ua = navigator.userAgent || '';
+      function has(s) { return ua.indexOf(s) >= 0; }
+      var os = (has('iPhone') || has('iPad') || has('iPod')) ? 'iPhone/iPad' : has('Android') ? 'Android' : has('Windows') ? 'Windows' : has('Mac OS X') ? 'Mac' : 'Other';
+      var browser = has('; wv)') ? 'In-app browser' : has('Edg') ? 'Edge' : has('SamsungBrowser') ? 'Samsung Internet' :
+        (has('CriOS') || has('Chrome/')) ? 'Chrome' : (has('FxiOS') || has('Firefox/')) ? 'Firefox' : has('Safari/') ? 'Safari' : 'Browser';
+      return os + ' · ' + browser;
+    }
+
+    // Audit fields for requests that scan, verify, check in or add a guest
+    function auditParams(method) {
+      return '&method=' + encodeURIComponent(method) + '&device=' + encodeURIComponent(deviceLabel());
     }
 
     // Cookie-free GET to the backend: never depends on the phone's Google account(s)
@@ -335,7 +399,7 @@
       $('header-sub').textContent = 'Guest pass check-in';
       var box = $('checkin-result');
       renderResult(box, { statusType: 'loading', title: 'Checking pass…', message: 'Invitation ' + id });
-      api('format=json&id=' + encodeURIComponent(id))
+      api('format=json&id=' + encodeURIComponent(id) + auditParams('qr-link'))
         .then(function(result) { renderResult(box, result); })
         .catch(function(err) { renderResult(box, connectionError(err, true)); });
     }
@@ -351,7 +415,7 @@
 
     /* ---------------- Tabs ---------------- */
 
-    var SECTIONS = { test: 'test-section', guests: 'guests-section', add: 'add-section' };
+    var SECTIONS = { test: 'test-section', guests: 'guests-section', log: 'log-section', add: 'add-section' };
 
     function switchTab(tab) {
       if (!SECTIONS[tab]) tab = 'test';
@@ -361,12 +425,16 @@
       });
       if (tab === 'test') prepareZxing();
 
-      // While the guest list is open, keep it in sync with other phones
+      // While the guest list or audit log is open, keep it in sync with other phones
       clearInterval(state.pollTimer);
       state.pollTimer = null;
       if (tab === 'guests') {
         if (!state.lastRefresh || Date.now() - state.lastRefresh.getTime() > 10000) refreshGuests();
         state.pollTimer = setInterval(refreshGuests, GUEST_POLL_MS);
+      }
+      if (tab === 'log') {
+        if (state.logStale || !state.logRefresh || Date.now() - state.logRefresh.getTime() > 10000) refreshLog();
+        state.pollTimer = setInterval(refreshLog, GUEST_POLL_MS);
       }
     }
 
@@ -374,7 +442,8 @@
 
     function setStatus(text) { $('scan-status').textContent = text || ''; }
 
-    // options.record overrides the "Record as a real check-in" toggle (false = verify only)
+    // options.record overrides the "Record as a real check-in" toggle (false = verify only);
+    // options.method is how the code was captured, for the audit log
     function verifyCode(rawText, options) {
       var id = extractGuestId(rawText);
       var box = $('scan-result');
@@ -384,13 +453,16 @@
 
       var record = (options && typeof options.record === 'boolean') ? options.record : $('record-checkin').checked;
       setStatus('Verifying ' + id + '…');
-      api('format=json&record=' + (record ? '1' : '0') + '&id=' + encodeURIComponent(id))
+      var method = (options && options.method) || 'unknown';
+      api('format=json&record=' + (record ? '1' : '0') + '&id=' + encodeURIComponent(id) + auditParams(method))
         .then(function(result) {
           renderResult(box, result);
           // A valid pass checked in verify-only mode gets an explicit "Check In" button
           if (!record && result && result.statusType === 'success') addConfirmButton(box, id, result.guest);
           // A recorded check-in changes the guest's status, so pull the updated list
           if (record && result && result.statusType === 'success') refreshGuests();
+          // Every scan (including duplicates and verify-only) adds an audit row
+          refreshLog();
         })
         .catch(function(err) { renderResult(box, connectionError(err, record)); })
         .then(function() {
@@ -405,7 +477,7 @@
       btn.type = 'button';
       btn.className = 'btn btn-primary';
       btn.textContent = '✓ Check In ' + (guest && guest.name ? guest.name : 'Now');
-      btn.addEventListener('click', function() { verifyCode(id, { record: true }); });
+      btn.addEventListener('click', function() { verifyCode(id, { record: true, method: 'confirm-button' }); });
       box.appendChild(btn);
     }
 
@@ -415,7 +487,7 @@
       if (!file) return;
       // Reset (so the same photo can be picked again) only after decoding: on iOS, clearing the
       // input deletes the temporary camera file and the photo can no longer be read.
-      processQrFile(file, function() { input.value = ''; });
+      processQrFile(file, function() { input.value = ''; }, input.id === 'camera-input' ? 'camera' : 'upload');
     }
 
     // Decode engines, strongest first:
@@ -432,7 +504,7 @@
       try { if (ZXingWASM.prepareZXingModule) ZXingWASM.prepareZXingModule({ fireImmediately: true }); } catch (e) {}
     }
 
-    function processQrFile(file, done) {
+    function processQrFile(file, done, method) {
       setStatus('Reading photo…');
       decodeNotes = [];
       prepareZxing();
@@ -444,7 +516,7 @@
           done();
           if (text) {
             setStatus('✓ QR found');
-            verifyCode(text);
+            verifyCode(text, { method: method });
           } else {
             decodeFailed(file, img);
           }
@@ -583,7 +655,8 @@
         var checked = g.status === 'Checked In';
         return '<div class="guest-item">' +
           '<div><div class="guest-item-name">' + escHtml(g.name) + '</div>' +
-          '<div class="guest-item-sub">ID: ' + escHtml(g.id) + ' &bull; ' + escHtml(g.table) + '</div></div>' +
+          '<div class="guest-item-sub">ID: ' + escHtml(g.id) + ' &bull; ' + escHtml(g.table) + '</div>' +
+          guestMetaHtml(g) + '</div>' +
           '<div class="guest-item-actions"><span class="status-pill ' + (checked ? 'status-checked' : 'status-active') + '">' + escHtml(g.status || 'Active') + '</span>' +
           '<button type="button" class="link-btn" data-code="' + escHtml(g.token || g.id) + '">Verify &rarr;</button></div>' +
           '</div>';
@@ -592,6 +665,105 @@
       var empty = $('guest-empty');
       empty.textContent = guests.length ? 'No guests match your search.' : 'No guests in the sheet yet.';
       empty.hidden = shown.length > 0;
+    }
+
+    // "2026-10-02 14:05:09" -> "10-02 14:05"
+    function shortTime(text) {
+      return String(text || '').slice(5, 16);
+    }
+
+    function guestMetaHtml(g) {
+      var parts = [];
+      if (g.createdAt) parts.push('Added ' + escHtml(shortTime(g.createdAt)));
+      if (g.checkedInAt) parts.push('In ' + escHtml(shortTime(g.checkedInAt)));
+      if (g.scans) parts.push(g.scans + (g.scans === 1 ? ' scan' : ' scans'));
+      if (g.duplicates) parts.push('<span class="warn">⚠ ' + g.duplicates + ' duplicate' + (g.duplicates === 1 ? '' : 's') + '</span>');
+      return parts.length ? '<div class="guest-item-meta">' + parts.join(' &bull; ') + '</div>' : '';
+    }
+
+    /* ---------------- Audit log ---------------- */
+
+    var LOG_FILTERS = {
+      all: function() { return true; },
+      checkin: function(e) { return e.result === 'CHECKED IN'; },
+      duplicate: function(e) { return e.result === 'DUPLICATE SCAN'; },
+      verify: function(e) { return e.action === 'VERIFY'; },
+      invalid: function(e) { return e.result === 'INVALID GUEST ID'; },
+      created: function(e) { return e.action === 'GUEST CREATED'; }
+    };
+
+    function logKind(e) {
+      if (e.action === 'GUEST CREATED') return 'created';
+      if (e.result === 'CHECKED IN') return 'success';
+      if (e.result === 'DUPLICATE SCAN') return 'duplicate';
+      if (e.result === 'INVALID GUEST ID') return 'error';
+      if (e.action === 'VERIFY') return 'verify';
+      return '';
+    }
+
+    var METHOD_LABELS = {
+      'camera': 'Camera scan', 'upload': 'Photo upload', 'manual': 'Typed code', 'guest-list': 'Guest list',
+      'confirm-button': 'Confirmed after verify', 'qr-link': 'QR link opened', 'phone-app': 'Phone page',
+      'portal-form': 'Apps Script portal', 'portal': 'Apps Script portal', 'api': 'Reception app'
+    };
+
+    function renderLog() {
+      var entries = state.log || [];
+      var counts = { checkin: 0, duplicate: 0, invalid: 0 };
+      entries.forEach(function(e) {
+        if (LOG_FILTERS.checkin(e)) counts.checkin++;
+        if (LOG_FILTERS.duplicate(e)) counts.duplicate++;
+        if (LOG_FILTERS.invalid(e)) counts.invalid++;
+      });
+      var summary = entries.length + ' entries • ' + counts.checkin + ' check-ins • ' + counts.duplicate + ' duplicates • ' + counts.invalid + ' invalid';
+      if (state.logRefresh) summary += ' • updated ' + state.logRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      $('log-summary').textContent = summary;
+
+      var shown = entries.filter(LOG_FILTERS[$('log-filter').value] || LOG_FILTERS.all);
+      $('log-list').innerHTML = shown.map(function(e) {
+        var guest = (e.name || 'Unknown') + (e.guestId ? ' · ID ' + e.guestId : '') + (e.table ? ' · ' + e.table : '');
+        var meta = [e.action, METHOD_LABELS[e.method] || e.method, e.device].filter(Boolean).join(' · ');
+        return '<div class="log-item ' + logKind(e) + '">' +
+          '<div class="log-top"><span class="log-result">' + escHtml(e.result || e.action) + '</span>' +
+          '<span class="log-time">' + escHtml(e.time) + '</span></div>' +
+          '<div class="log-guest">' + escHtml(guest) + '</div>' +
+          '<div class="log-meta">' + escHtml(meta) + '</div>' +
+          '</div>';
+      }).join('');
+
+      var empty = $('log-empty');
+      empty.textContent = entries.length ? 'No entries match this filter.' : 'No activity recorded yet.';
+      empty.hidden = shown.length > 0;
+    }
+
+    // Loads the latest 200 audit rows. While the Log tab is hidden it only marks the log stale,
+    // so scanning does not cost an extra request each time.
+    function refreshLog() {
+      if ($('log-section').hidden) { state.logStale = true; return; }
+      if (state.logLoading) { state.logQueued = true; return; }
+      state.logLoading = true;
+      state.logQueued = false;
+      var btn = $('btn-refresh-log');
+      btn.disabled = true;
+      btn.textContent = 'Refreshing…';
+      api('action=auditLog&limit=200')
+        .then(function(data) {
+          if (!data || !data.success || !Array.isArray(data.entries)) throw new Error('unexpected response');
+          state.log = data.entries;
+          state.logRefresh = new Date();
+          state.logStale = false;
+          renderLog();
+        })
+        .catch(function(err) {
+          $('log-summary').textContent = 'Could not load the audit log (' + ((err && err.message) || err) +
+            '). If this keeps happening, the latest Code.gs may not be deployed yet.';
+        })
+        .then(function() {
+          state.logLoading = false;
+          btn.disabled = false;
+          btn.textContent = '↻ Refresh';
+          if (state.logQueued) refreshLog();
+        });
     }
 
     function refreshGuests() {
@@ -642,7 +814,8 @@
         '&name=' + encodeURIComponent($('add-name').value.trim()) +
         '&table=' + encodeURIComponent($('add-table').value.trim()) +
         '&phone=' + encodeURIComponent($('add-phone').value.trim()) +
-        '&guestId=' + encodeURIComponent($('add-id').value.trim());
+        '&guestId=' + encodeURIComponent($('add-id').value.trim()) +
+        auditParams('phone-app');
       btn.disabled = true;
       btn.textContent = 'Saving…';
       api(query)
@@ -658,6 +831,7 @@
           $('add-form').reset();
           delete $('add-id').dataset.touched;
           refreshGuests();
+          refreshLog();
         })
         .catch(function(err) {
           alert('Could not save the guest to Google Sheets (' + ((err && err.message) || err) + '). Nothing was added.');
@@ -674,19 +848,21 @@
     $('gallery-input').addEventListener('change', handleFileInput);
     $('manual-verify').addEventListener('click', function() {
       var val = $('manual-id').value.trim();
-      if (val) verifyCode(val);
+      if (val) verifyCode(val, { method: 'manual' });
     });
     $('manual-id').addEventListener('keydown', function(e) {
       if (e.key === 'Enter') { e.preventDefault(); $('manual-verify').click(); }
     });
     $('btn-refresh').addEventListener('click', refreshGuests);
+    $('btn-refresh-log').addEventListener('click', refreshLog);
+    $('log-filter').addEventListener('change', renderLog);
     $('guest-search').addEventListener('input', renderGuests);
     $('guest-list').addEventListener('click', function(e) {
       var btn = e.target.closest('[data-code]');
       if (!btn) return;
       switchTab('test');
       // Never check in from the list with one tap: verify only, then confirm with the "Check In" button
-      verifyCode(btn.getAttribute('data-code'), { record: false });
+      verifyCode(btn.getAttribute('data-code'), { record: false, method: 'guest-list' });
     });
     $('add-id').addEventListener('input', function() { this.dataset.touched = '1'; });
     $('add-form').addEventListener('submit', addGuest);
