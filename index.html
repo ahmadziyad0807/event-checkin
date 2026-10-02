@@ -374,18 +374,21 @@
 
     function setStatus(text) { $('scan-status').textContent = text || ''; }
 
-    function verifyCode(rawText) {
+    // options.record overrides the "Record as a real check-in" toggle (false = verify only)
+    function verifyCode(rawText, options) {
       var id = extractGuestId(rawText);
       var box = $('scan-result');
       if (!id) { renderResult(box, { statusType: 'error', title: 'No Code', message: 'The QR code was empty.' }); return; }
       if (state.verifying) return;
       state.verifying = true;
 
-      var record = $('record-checkin').checked;
+      var record = (options && typeof options.record === 'boolean') ? options.record : $('record-checkin').checked;
       setStatus('Verifying ' + id + '…');
       api('format=json&record=' + (record ? '1' : '0') + '&id=' + encodeURIComponent(id))
         .then(function(result) {
           renderResult(box, result);
+          // A valid pass checked in verify-only mode gets an explicit "Check In" button
+          if (!record && result && result.statusType === 'success') addConfirmButton(box, id, result.guest);
           // A recorded check-in changes the guest's status, so pull the updated list
           if (record && result && result.statusType === 'success') refreshGuests();
         })
@@ -395,6 +398,15 @@
           setStatus('');
           try { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
         });
+    }
+
+    function addConfirmButton(box, id, guest) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-primary';
+      btn.textContent = '✓ Check In ' + (guest && guest.name ? guest.name : 'Now');
+      btn.addEventListener('click', function() { verifyCode(id, { record: true }); });
+      box.appendChild(btn);
     }
 
     function handleFileInput(event) {
@@ -673,7 +685,8 @@
       var btn = e.target.closest('[data-code]');
       if (!btn) return;
       switchTab('test');
-      verifyCode(btn.getAttribute('data-code'));
+      // Never check in from the list with one tap: verify only, then confirm with the "Check In" button
+      verifyCode(btn.getAttribute('data-code'), { record: false });
     });
     $('add-id').addEventListener('input', function() { this.dataset.touched = '1'; });
     $('add-form').addEventListener('submit', addGuest);
